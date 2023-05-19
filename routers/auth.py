@@ -111,3 +111,8 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
     token = create_access_token(user.username, user.id,  timedelta(minutes=20))
 
     return {'access_token': token, 'token_type': 'bearer'}
+
+@router.get("/users", status_code=status.HTTP_200_OK)
+async def get_users(db: Session = Depends(get_db)):
+    users = db.query(Users).all()
+    return users
