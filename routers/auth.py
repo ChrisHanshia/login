@@ -29,8 +29,8 @@ class CreateUserRequest(BaseModel):
     last_name: str
     password: str
     date_of_birth: str
-    register_number: int
-    phone_number: int
+    register_number: str
+    phone_number: str
     gender: str
     address: str
     course: str
