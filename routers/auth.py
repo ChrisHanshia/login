@@ -28,12 +28,12 @@ class CreateUserRequest(BaseModel):
     first_name: str
     last_name: str
     password: str
-    phone_number: int
     date_of_birth: str
     register_number: int
+    phone_number: int
+    gender: str
     address: str
     course: str
-    gender: str
 
 
 class Token(BaseModel):
@@ -59,8 +59,8 @@ def authenticated_user(username: str, password: str, db):
         return False
     return user
 
-def create_access_token(username: str, user_id: int, role: str, expires_delta: timedelta):
-    encode = {'sub': username, 'id': user_id, 'role': role}
+def create_access_token(username: str, user_id: int,  expires_delta: timedelta):
+    encode = {'sub': username, 'id': user_id, }
     expires = datetime.utcnow() + expires_delta
     encode.update({'exp': expires})
     return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
@@ -71,11 +71,10 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get('sub')
         user_id: int = payload.get('id')
-        user_role: str = payload.get('role')
         if username is None or user_id is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                                 detail='could not validate user.')
-        return {'username': username, 'id': user_id, 'user_role': user_role}
+        return {'username': username, 'id': user_id}
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail='could not validate user.')
@@ -93,9 +92,9 @@ async def create_user(db: db_dependency,
         date_of_birth=create_user_request.date_of_birth,
         register_number=create_user_request.register_number,
         phone_number=create_user_request.phone_number,
+        gender=create_user_request.gender,
         address=create_user_request.address,
-        course=create_user_request.course,
-        gender=create_user_request.gender
+        course=create_user_request.course
     )
 
     db.add(create_user_model)
@@ -109,6 +108,6 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail='could not validate user.')
-    token = create_access_token(user.username, user.id, user.role, timedelta(minutes=20))
+    token = create_access_token(user.username, user.id,  timedelta(minutes=20))
 
     return {'access_token': token, 'token_type': 'bearer'}
