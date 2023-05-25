@@ -1,7 +1,7 @@
 from datetime import timedelta, datetime
 from typing_extensions import Annotated
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import Users
@@ -39,6 +39,12 @@ class CreateUserRequest(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+class PasswordUpdate(BaseModel):
+    old_password: str = Field(..., alias="oldPassword")
+    new_password: str = Field(..., alias="newPassword")
+    confirm_password: str = Field(..., alias="confirmPassword")
+
 
 def get_db():
     db = SessionLocal()
@@ -111,6 +117,54 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
     token = create_access_token(user.username, user.id,  timedelta(minutes=20))
 
     return {'access_token': token, 'token_type': 'bearer'}
+
+
+@router.put("/forget_password")
+async def forget_password(
+        username_or_email: str,
+        new_password: str,
+        confirm_password: str,
+        db: Session = Depends(get_db)
+):
+    user = db.query(Users).filter(
+        (Users.username == username_or_email) | (Users.email == username_or_email)
+    ).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if new_password != confirm_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passwords do not match")
+
+    hashed_password = bcrypt_context.hash(new_password)
+    user.hashed_password = hashed_password
+    db.commit()
+
+
+@router.put("/reset_password")
+async def reset_password(password_update: PasswordUpdate,
+                         current_user: dict = Depends(get_current_user),
+                         db: Session = Depends(get_db)):
+    user = db.query(Users).filter(Users.id == current_user['id']).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    old_password = password_update.old_password
+    new_password = password_update.new_password
+    confirm_password = password_update.confirm_password
+
+    if not bcrypt_context.verify(old_password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect old password")
+
+    if new_password != confirm_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="New password and confirm password do not match")
+
+    hashed_password = bcrypt_context.hash(new_password)
+    user.hashed_password = hashed_password
+    db.commit()
+
+    return {"message": "Password updated successfully"}
+
 
 @router.get("/users", status_code=status.HTTP_200_OK)
 async def get_users(db: Session = Depends(get_db)):
