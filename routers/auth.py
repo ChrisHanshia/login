@@ -1,7 +1,7 @@
 from datetime import timedelta, datetime
 from typing_extensions import Annotated
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, validator
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import Users
@@ -28,22 +28,49 @@ class CreateUserRequest(BaseModel):
     first_name: str
     last_name: str
     password: str
+    confirm_password: str
     date_of_birth: str
     register_number: str
     phone_number: str
     gender: str
     address: str
-    course: str
+    course: str\
 
+
+    @validator('password')
+    def password_must_be_strong(cls, value):
+        if not (8 <= len(value) <= 50):
+            raise ValueError('Password must be between 8 and 50 characters long')
+        return value
+
+class Login(BaseModel):
+    username_or_email: str
+    password: str
 
 class Token(BaseModel):
     access_token: str
     token_type: str
 
 class PasswordUpdate(BaseModel):
-    old_password: str = Field(..., alias="oldPassword")
+    username_or_email: str = Field(..., alias="username_or_email")
     new_password: str = Field(..., alias="newPassword")
     confirm_password: str = Field(..., alias="confirmPassword")
+
+    @validator('username_or_email')
+    def username_or_email_must_valid(cls, value):
+        if '@' in value:
+            email = EmailStr(value)
+            return email
+        else:
+            if not (4 <= len(value) <= 20):
+                raise ValueError('Username must be between 4 and 20 characters long')
+            return value
+
+    @validator('new_password')
+    def password_must_be_strong(cls, value):
+        if not (8 <= len(value) <= 50):
+            raise ValueError('Password must be between 8 and 50 characters long')
+        return value
 
 
 def get_db():
@@ -54,16 +81,16 @@ def get_db():
         db.close()
 
 
-db_dependency = Annotated[Session, Depends(get_db)]
-
-
-def authenticated_user(username: str, password: str, db):
-    user = db.query(Users).filter(Users.username == username).first()
+def authenticate_user(username_or_email: str, password: str, db):
+    user = db.query(Users).filter(Users.username == username_or_email).first()
     if not user:
-        return False
+        user = db.query(Users).filter(Users.email == username_or_email).first()
+        if not user:
+            raise HTTPException(status_code=400, detail="Incorrect username or email")
     if not bcrypt_context.verify(password, user.hashed_password):
-        return False
+        raise HTTPException(status_code=400, detail="Incorrect password")
     return user
+
 
 def create_access_token(username: str, user_id: int,  expires_delta: timedelta):
     encode = {'sub': username, 'id': user_id, }
@@ -72,7 +99,7 @@ def create_access_token(username: str, user_id: int,  expires_delta: timedelta):
     return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
+def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get('sub')
@@ -86,9 +113,20 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
                             detail='could not validate user.')
 
 
+db_dependency = Annotated[Session, Depends(get_db)]
+user_dependency = Annotated[dict, Depends(get_current_user)]
+
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_user(db: db_dependency,
                       create_user_request: CreateUserRequest):
+    if db.query(Users).filter(Users.username == create_user_request.username).first():
+        raise HTTPException(status_code=400, detail="Username already exists")
+    if db.query(Users).filter(Users.email == create_user_request.email).first():
+        raise HTTPException(status_code=400, detail="Email already exists")
+    if create_user_request.password != create_user_request.confirm_password:
+        raise HTTPException(status_code=400, detail="Password and confirm password should be same")
+
     create_user_model = Users(
         email=create_user_request.email,
         username=create_user_request.username,
@@ -105,68 +143,48 @@ async def create_user(db: db_dependency,
 
     db.add(create_user_model)
     db.commit()
+    db.refresh(create_user_model)
+    return {"message": "User created Successfully"}
 
 
 @router.post("/token", response_model=Token)
-async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
-                                 db: db_dependency):
-    user = authenticated_user(form_data.username, form_data.password, db)
+def login_for_access_token(login_request: Login,
+                           db: db_dependency):
+    user = authenticate_user(login_request.username_or_email, login_request.password, db)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail='could not validate user.')
-    token = create_access_token(user.username, user.id,  timedelta(minutes=20))
+                            detail='Could not validate user.', headers={"WWW-Authenticate": "Bearer"})
 
-    return {'access_token': token, 'token_type': 'bearer'}
+    token = create_access_token(user.username, user.id, timedelta(minutes=20))
+    return {'access_token': token, 'token_type': 'bearer', 'message': 'Login Successfully'}
 
 
 @router.put("/forget_password")
-async def forget_password(
-        username_or_email: str,
-        new_password: str,
-        confirm_password: str,
-        db: Session = Depends(get_db)
-):
+async def update_user_password(update_password: PasswordUpdate,
+                               db: db_dependency):
     user = db.query(Users).filter(
-        (Users.username == username_or_email) | (Users.email == username_or_email)
-    ).first()
+        (Users.email == update_password.username_or_email) |
+        (Users.username == update_password.username_or_email)).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    if new_password != confirm_password:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passwords do not match")
-
-    hashed_password = bcrypt_context.hash(new_password)
-    user.hashed_password = hashed_password
-    db.commit()
-
-
-@router.put("/reset_password")
-async def reset_password(password_update: PasswordUpdate,
-                         current_user: dict = Depends(get_current_user),
-                         db: Session = Depends(get_db)):
-    user = db.query(Users).filter(Users.id == current_user['id']).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    old_password = password_update.old_password
-    new_password = password_update.new_password
-    confirm_password = password_update.confirm_password
-
-    if not bcrypt_context.verify(old_password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect old password")
-
-    if new_password != confirm_password:
+    if update_password.new_password != update_password.confirm_password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="New password and confirm password do not match")
+                            detail="New password and confirm password should be same")
 
-    hashed_password = bcrypt_context.hash(new_password)
-    user.hashed_password = hashed_password
+    new_hashed_password = bcrypt_context.hash(update_password.new_password)
+    user.hashed_password = new_hashed_password
     db.commit()
-
-    return {"message": "Password updated successfully"}
+    return {'message': 'Password changed Successfully'}
 
 
 @router.get("/users", status_code=status.HTTP_200_OK)
 async def get_users(db: Session = Depends(get_db)):
     users = db.query(Users).all()
     return users
+
+@router.delete('/delete_user/{user_id}')
+def delete_user(user_id: int, db: db_dependency):
+    user = db.query(Users).filter(Users.id == user_id).first()
+    db.delete(user)
+    db.commit()
+    return {'message': 'User deleted Successfully'}
