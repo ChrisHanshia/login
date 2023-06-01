@@ -28,7 +28,6 @@ class CreateUserRequest(BaseModel):
     first_name: str
     last_name: str
     password: str
-    confirm_password: str
     date_of_birth: str
     register_number: str
     phone_number: str
@@ -124,8 +123,6 @@ async def create_user(db: db_dependency,
         raise HTTPException(status_code=400, detail="Username already exists")
     if db.query(Users).filter(Users.email == create_user_request.email).first():
         raise HTTPException(status_code=400, detail="Email already exists")
-    if create_user_request.password != create_user_request.confirm_password:
-        raise HTTPException(status_code=400, detail="Password and confirm password should be same")
 
     create_user_model = Users(
         email=create_user_request.email,
